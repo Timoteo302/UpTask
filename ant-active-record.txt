@@ -1,0 +1,262 @@
+<?php
+// Antes de que se produzca la advertencia
+namespace Model;
+
+error_reporting(error_reporting() & ~E_DEPRECATED);
+
+class ActiveRecord {
+
+    // Base DE DATOS
+    protected static $db;
+    protected static $tabla = '';
+    protected static $columnasDB = [];
+
+    // Alertas y Mensajes
+    protected static $alertas = [];
+    
+    // Definir la conexión a la BD - includes/database.php
+    public static function setDB($database) {
+        self::$db = $database;
+    }
+
+    public static function setAlerta($tipo, $mensaje) {
+        static::$alertas[$tipo][] = $mensaje;
+    }
+
+    // Validación
+    public static function getAlertas() {
+        return static::$alertas;
+    }
+
+    public function validar() {
+        static::$alertas = [];
+        return static::$alertas;
+    }
+
+    // Consulta SQL para crear un objeto en Memoria
+    public static function consultarSQL($query) {
+        // Consultar la base de datos
+        $resultado = self::$db->query($query);
+
+        // Iterar los resultados
+        $array = [];
+        while($registro = $resultado->fetch_assoc()) {
+            $array[] = static::crearObjeto($registro);
+        }
+
+        // liberar la memoria
+        $resultado->free();
+
+        // retornar los resultados
+        return $array;
+    }
+
+    // Crea el objeto en memoria que es igual al de la BD
+    protected static function crearObjeto($registro) {
+        $objeto = new static;
+
+        foreach($registro as $key => $value ) {
+            if(property_exists( $objeto, $key  )) {
+                $objeto->$key = $value;
+            }
+        }
+
+        return $objeto;
+    }
+
+    // Se encarga de iterar cada uno de ellos, del arreglo de "columnasDB"
+    // Identificar y unir los atributos de la BD
+    //como que mapea los atributos
+    public function atributos() {
+        $atributos = [];
+        foreach(static::$columnasDB as $columna) {
+            if($columna === 'id') continue; //salta el "id" pq no lo necesitamos
+            $atributos[$columna] = $this->$columna;
+        }
+        return $atributos;
+        /*Tenemos los elementos en memoria ya, en el arreglo de "atributos"
+        a partir de aqui ya podemos sanitizarlos */
+    }
+
+    // Sanitizar los datos antes de guardarlos en la BD
+    public function sanitizarAtributos() {
+        $atributos = $this->atributos();
+        $sanitizado = [];
+         // podemos guardar clave y valor en el foreach ejemplo "titulo = 'casa'"
+        foreach($atributos as $key => $value ) {
+            $sanitizado[$key] = self::$db->escape_string($value);
+            //sanitizamos con "escape_string"
+        }
+
+        return $sanitizado;
+    }
+
+    // Sincroniza BD con Objetos en memoria
+    public function sincronizar($args=[]) { 
+        foreach($args as $key => $value) {
+          if(property_exists($this, $key) && !is_null($value)) {
+            $this->$key = $value;
+            //el $this hace referencia a todos los datos en el que estamos
+            //en el momento de actualizar, ejemplo los datos del id=8.
+          }
+        }
+        /* Este codigo se va sincronizar, se va encargar de leer todo 
+        el POST, se va encargar de leer el objeto que esta en memoria, 
+        va ir iterando, mapeando cada una de las propiedades, 'id' con 'id'
+        'titulo' con 'titulo' y va a ir rescribiendo las nuevas (actualizar.php)
+        
+        "property_exists()--
+        Verifica que una propiedad exista, toma 2 parametros, 1 objeto, 2 llave.
+        ej: verificamos si el objeto tiene un "id", un "titulo", y asi cada vez 
+        que va iterando, ejemplo, En la primera vuelta esta el "id", en ese objeto,
+        o sea dice... "en el objeto (en este caso $this que hace referencia al objeto 
+        mismo de acá) $this, existe la llave "id"? Porque "id" viene de POST entonces 
+        nosotros con "property_exists()" lo que hacemos es verificar si en el objeto este
+        tenemos la llave $key que $key seria en cada while del foreach los "atributos",
+        el primero seria "id",. Y , si existe lo que hace es
+        que agarra ese objeto ($this) y con su llave recien evaluada que en la primera
+        vuelta seria $id lo que haria es asignarle el $valor a esa misma llave.
+        El valor lo toma de el $args[] que nosotros le pasamos en ese momento, $args es 
+        un arreglo asociativo que viene de $_POST, porque en post se encuentra toda la 
+        informacion que va escribiendo el usuario. 
+        Con el foreach() lo que hacemos es como "desarmar" ese arreglo asociativo en "partes"
+        partes que en el arreglo asociativo se conforman por "key & value" llave y valor.
+        Entonces por eso nosotros verificamos que en cada vuelta, en el objeto mismo ($this) 
+        exista, o le preguntamos si existe, cada llave ($key) en ese objeto.
+        Tambien preguntamos si el valor es nullo, si no es null nos retorna un "false" y para 
+        que entre en el if() lo que hacemos es ponerle una negación "!".
+
+        Entonces eso es lo que hace este codigo, lo que hace es "sincronizar"  datos nuevos 
+        y reemplazarlos en el objeto en este caso, en la instancia misma, es "reemplazar"
+        los valores de atributods pasados con el objeto.
+        */
+    }
+
+
+    // Registros - CRUD
+    public function guardar() {
+        $resultado = '';
+
+        //si hay un id lo actualiza
+        if(!is_null($this->id)) {
+            // actualizar
+            $resultado = $this->actualizar();
+        } else {
+            // Creando un nuevo registro
+            $resultado = $this->crear();
+        }
+        return $resultado;
+    }
+
+    // Todos los registros
+    public static function all() {
+        $query = "SELECT * FROM " . static::$tabla;
+        $resultado = self::consultarSQL($query);
+        return $resultado;
+    }
+
+    // Busca un registro por su id
+    public static function find($id) {
+        $query = "SELECT * FROM " . static::$tabla  ." WHERE id = {$id}";
+        $resultado = self::consultarSQL($query);
+        return array_shift( $resultado ) ;
+    }
+
+
+    // Busca un registro por su where
+    /*Recibe 2 valores, una columna y un valor, asi buscamos por columna
+    y valor, ejemplo: busca en la columna "token" el valor "123".
+    lo llamariamos asi: Usuario::where('token','123');
+    y la consulta seria asi: 
+    --"SELECT * FROM usuarios WHERE token = 123"-- */
+    public static function where($columna, $valor) {
+        $query = "SELECT * FROM " . static::$tabla  ." WHERE {$columna} = '{$valor}'";
+        // debuguear($query);
+        $resultado = self::consultarSQL($query);
+        return array_shift( $resultado ) ;
+    }
+
+
+    // Consulta plana de SQL {utilizar cuando los metodos del modelo no son suficientes}
+    public static function SQL($consulta) {
+        $query = $consulta;
+        // debuguear($query);
+        $resultado = self::consultarSQL($query);
+        return $resultado;
+
+        /*ARRAY_SHIFT() gracias a eso, entra en el primer campo.
+        nos evita esto: $cita[0]->imagen --- $propiedad[0]->imagen.
+        Pero en este caso no lo necesitamos.*/
+    }
+
+
+    // Obtener Registros con cierta cantidad
+    public static function get($limite) {
+        $query = "SELECT * FROM " . static::$tabla . " LIMIT {$limite}";
+        $resultado = self::consultarSQL($query);
+        return array_shift( $resultado ) ;
+    }
+
+    // crea un nuevo registro
+    public function crear() {
+        // Sanitizar los datos
+        $atributos = $this->sanitizarAtributos();
+
+        // Insertar en la base de datos
+        $query = " INSERT INTO " . static::$tabla . " ( ";
+        $query .= join(', ', array_keys($atributos));
+        $query .= " ) VALUES (' "; 
+        $query .= join("', '", array_values($atributos));
+        $query .= " ') ";
+
+        // Debuguear para saber los errores que hay
+        // Imprime la consulta que estamos mandando
+        // return json_encode(['query' => $query]);
+
+        /*Va antes de los $query.
+        Lo que hacemos es entrar a postman, tener la url correcta, el metodo de 
+        request, ya sea "post" o "get" y en body lo campos que enviaremos.
+        Si le damos a "send" y por ejemplo el id del usuario lo cambiamos por uno
+        que no existe, lo que nos aparecerá, será el codigo SQL
+        que tratamos de inyectar, lo podemos pegar en el TablePlus y el error
+        que nos tire, sabremos cual sera y lo podemos buscar*/
+
+        // Resultado de la consulta
+        $resultado = self::$db->query($query);
+        return [
+           'resultado' =>  $resultado,
+           'id' => self::$db->insert_id
+           // id -> del ultimo registro agregado 
+        ];
+    }
+
+    // Actualizar el registro
+    public function actualizar() {
+        // Sanitizar los datos
+        $atributos = $this->sanitizarAtributos();
+
+        // Iterar para ir agregando cada campo de la BD
+        $valores = [];
+        foreach($atributos as $key => $value) {
+            $valores[] = "{$key}='{$value}'";
+        }
+
+        // Consulta SQL
+        $query = "UPDATE " . static::$tabla ." SET ";
+        $query .=  join(', ', $valores );
+        $query .= " WHERE id = '" . self::$db->escape_string($this->id) . "' ";
+        $query .= " LIMIT 1 "; 
+
+        // Actualizar BD
+        $resultado = self::$db->query($query);
+        return $resultado;
+    }
+
+    // Eliminar un Registro por su ID
+    public function eliminar() {
+        $query = "DELETE FROM "  . static::$tabla . " WHERE id = " . self::$db->escape_string($this->id) . " LIMIT 1";
+        $resultado = self::$db->query($query);
+        return $resultado;
+    }
+
+}
